@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+import os
+import time
+import subprocess
+from configparser import ConfigParser
+from tkinter import *
+
+class SlimPanel:
+    def __init__(self):
+        # Load configuration
+        self.config = ConfigParser()
+        self.config.read('slimpanel.conf')
+        
+        # Detect window manager
+        self.wm = self.detect_window_manager()
+        self.gap_adjusted = False
+        
+        # Adjust gaps and windows if i3 is detected
+        if self.wm == 'i3' and self.config.getboolean('appearance', 'adjust_gaps', fallback=True):
+            self.adjust_i3_gaps()
+            self.gap_adjusted = True
+        
+        # Get monitor info
+        self.monitors = self.get_monitors()
+        
+        # Create windows
+        self.roots = []
+        self.frames = []
+        self.labels = []
+        
+        for monitor in self.monitors:
+            root = Tk()
+            root.overrideredirect(True)
+            root.attributes('-alpha', 0.9)
+            
+            width = monitor['width']
+            height = int(self.config['appearance']['height'])
+            x_offset = monitor['x']
+            root.geometry(f"{width}x{height}+{x_offset}+0")
+            
+            # Styling
+            bg_color = self.config['colors']['background']
+            fg_color = self.config['colors']['foreground']
+            accent_color = self.config['colors']['accent']
+            
+            # Frame with optional border
+            border = 1 if self.config.getboolean('appearance', 'border', fallback=True) else 0
+            frame = Frame(root, bg=bg_color, bd=border,
+                         highlightbackground=accent_color,
+                         highlightthickness=border)
+            frame.pack(fill=X, padx=5, pady=2)
+            
+            # Module frames
+            left_frame = Frame(frame, bg=bg_color)
+            center_frame = Frame(frame, bg=bg_color)
+            right_frame = Frame(frame, bg=bg_color)
+            
+            left_frame.pack(side=LEFT, padx=2)
+            center_frame.pack(side=LEFT, expand=True)
+            right_frame.pack(side=RIGHT, padx=2)
+            
+            # Labels with bold font
+            font = (self.config['appearance']['font'],
+                   int(self.config['appearance']['fontsize']),
+                   'bold')
+            
+            left_workspace = Label(left_frame, bg=bg_color, fg=fg_color,
+                                 font=font, pady=2, anchor='w')
+            left_window = Label(left_frame, bg=bg_color, fg=fg_color,
+                               font=font, pady=2, anchor='w')
+            center_label = Label(center_frame, bg=bg_color, fg=fg_color,
+                                font=font, pady=2)
+            right_label = Label(right_frame, bg=bg_color, fg=fg_color,
+                               font=font, pady=2)
+            
+            left_workspace.pack(side=TOP)
+            left_window.pack(side=TOP)
+            center_label.pack()
+            right_label.pack()
+            
+            self.roots.append(root)
+            self.frames.append(frame)
+            self.labels.append((left_workspace, left_window, center_label, right_label))
+        
+        # Register cleanup on exit
+        for root in self.roots:
+            root.protocol("WM_DELETE_WINDOW", lambda r=root: self.cleanup(r))
+        
+        self.update_bars()
+        for root in self.roots:
+            root.mainloop()
+
+    def detect_window_manager(self):
+        """Detect the current window manager"""
+        wm = subprocess.getoutput('xprop -root _NET_WM_NAME 2>/dev/null | awk -F= \'{print $2}\' | tr -d \'"\'')
+        if 'i3' in wm.lower():
+            return 'i3'
+        elif 'hyprland' in wm.lower():
+            return 'hyprland'
+        elif 'dwm' in wm.lower():
+            return 'dwm'
+        return None
+
+    def get_monitors(self):
+        output = subprocess.getoutput("xrandr --current | grep ' connected'")
+        monitors = []
+        for line in output.split('\n'):
+            if 'connected' in line:
+                parts = line.split()
+                resolution = parts[2] if parts[2] != 'primary' else parts[3]
+                width, height = map(int, resolution.split('+')[0].split('x'))
+                x_offset = int(resolution.split('+')[1])
+                monitors.append({'width': width, 'height': height, 'x': x_offset})
+        return monitors
+
+    def adjust_i3_gaps(self):
+        """Adjust i3 gaps and move windows down"""
+        height = int(self.config['appearance']['height'])
+        subprocess.run(['i3-msg', f'gaps top set {height}'])
+        subprocess.run(['i3-msg', 'for_window [class=".*"] move down 1 pixel'])
+
+    def cleanup(self, root):
+        """Revert i3 gaps and destroy window"""
+        if self.gap_adjusted and self.wm == 'i3':
+            subprocess.run(['i3-msg', 'gaps top set 0'])
+            subprocess.run(['i3-msg', 'for_window [class=".*"] move up 1 pixel'])
+        root.destroy()
+        if all(r not in self.roots for r in self.roots):
+            for r in self.roots:
+                if r.winfo_exists():
+                    r.destroy()
+
+    def get_module_output(self, module):
+        try:
+            if module == 'xwindow':
+                title = subprocess.getoutput('xprop -id $(xdotool getactivewindow) WM_CLASS WM_NAME 2>/dev/null | awk \'{print $3 " - " $5}\'')
+                return f" {title.strip('\"')[:30]}" if 'not found' not in title else " Empty"
+            elif module == 'xworkspaces':
+                # Try to detect active workspace
+                try:
+                    active = subprocess.getoutput('xprop -root _NET_CURRENT_DESKTOP 2>/dev/null | awk \'{print $3}\'')
+                    active = int(active) if active.isdigit() else 0
+                except:
+                    active = 0  # Fallback
+                workspaces = ''
+                for i in range(6):
+                    ws = str(i + 1)
+                    workspaces += f"[{ws}]" if i == active else f" {ws} "
+                return workspaces.strip()
+            elif module == 'cpu':
+                usage = subprocess.getoutput('top -bn1 | grep "Cpu(s)" | awk \'{print $2}\'')
+                return f" {usage}%"
+            elif module == 'memory':
+                mem = subprocess.getoutput('free -m | grep Mem | awk \'{print $3"/"$2}\'')
+                return f" {mem}M"
+            elif module == 'date':
+                return f" {time.strftime('%d.%m.%Y')}"
+            elif module == 'clock':
+                return f" {time.strftime('%H:%M')}"
+            elif module == 'battery':
+                if os.path.exists('/sys/class/power_supply/BAT0'):
+                    capacity = subprocess.getoutput('cat /sys/class/power_supply/BAT0/capacity')
+                    status = subprocess.getoutput('cat /sys/class/power_supply/BAT0/status')
+                    icons = {'0-20': '', '21-40': '', '41-60': '',
+                            '61-80': '', '81-100': ''}
+                    percent = int(capacity)
+                    icon = [v for k, v in icons.items() if percent in range(int(k.split('-')[0]), int(k.split('-')[1])+1)][0]
+                    return f"{icon} {capacity}% {'󱐋' if status == 'Charging' else ''}"
+            elif module == 'pulseaudio':
+                vol = subprocess.getoutput('amixer get Master | grep -o "[0-9]*%" | head -1')
+                mute = 'muted' in subprocess.getoutput('amixer get Master')
+                return f"󰕾 {vol[:-1] if not mute else 'Muted'}"
+            elif module == 'now-playing':
+                if self.config.getboolean('modules', 'now_playing_enabled', fallback=False):
+                    player = subprocess.getoutput('playerctl metadata title 2>/dev/null')
+                    return f" {player[:20]}" if 'No players' not in player else ""
+                return ""
+            return ""
+        except Exception as e:
+            return f"Err:{str(e)[:10]}"
+
+    def update_bars(self):
+        left_modules = self.config['modules']['left'].split(',')
+        center_modules = self.config['modules']['center'].split(',')
+        right_modules = self.config['modules']['right'].split(',')
+        
+        for labels in self.labels:
+            left_workspace, left_window, center_label, right_label = labels
+            left_workspace.config(text=self.get_module_output('xworkspaces') if 'xworkspaces' in left_modules else '')
+            left_window.config(text=self.get_module_output('xwindow') if 'xwindow' in left_modules else '')
+            center_label.config(text='  '.join(self.get_module_output(m.strip()) for m in center_modules if m.strip() not in ['xworkspaces', 'xwindow']))
+            right_label.config(text='  '.join(self.get_module_output(m.strip()) for m in right_modules if m.strip() not in ['xworkspaces', 'xwindow']))
+        
+        for root in self.roots:
+            root.after(1000, self.update_bars)
+
+if __name__ == "__main__":
+    SlimPanel()
