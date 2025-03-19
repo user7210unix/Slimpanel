@@ -95,8 +95,8 @@ class SlimPanel:
         wm = subprocess.getoutput('xprop -root _NET_WM_NAME 2>/dev/null | awk -F= \'{print $2}\' | tr -d \'"\'')
         if 'i3' in wm.lower():
             return 'i3'
-        elif 'hyprland' in wm.lower():
-            return 'hyprland'
+        elif 'slimwm' in wm.lower():
+            return 'slimwm'
         elif 'dwm' in wm.lower():
             return 'dwm'
         return None
